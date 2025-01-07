@@ -1,0 +1,50 @@
+steps:
+  # Step 1: Checkout code
+  - name: 'gcr.io/cloud-builders/git'
+    args: ['clone', '--single-branch', '--branch', 'main', '${_REPO_URL}', 'app']
+  # Step 2: Set up Docker Environment and change permissions
+  - name: 'gcr.io/cloud-builders/docker'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        chmod -R 777 app
+  # Step 3: Run OWASP ZAP baseline scan
+  - name: 'gcr.io/cloud-builders/docker'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        docker run --rm \
+          -v $(pwd)/app:/zap/wrk \
+          -w /zap/wrk \
+          ghcr.io/zaproxy/zaproxy:stable \
+          zap-baseline.py \
+          -t {target-url} \
+          -r scanreport.html \
+          -x scanreport.xml \
+          -J scanreport.json \
+          -I
+  - name: 'gcr.io/cloud-builders/gcloud'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        gcloud secrets versions access latest --secret=accuknox_token --format='get(payload.data)' | tr '_-' '/+' | base64 -d > /workspace/decrypted-data.txt
+  # Step 5: Upload ZAP Scan Report
+  - name: 'gcr.io/cloud-builders/curl'
+    entrypoint: '/bin/sh'
+    args:
+      - '-c'
+      - |
+        curl --location --request POST "https://${_AK_URL}/api/v1/artifact/?tenant_id=${_TENANT_ID}&data_type=ZAP&save_to_s3=false" \
+          --header "Tenant-Id: ${_TENANT_ID}" \
+          --header "Authorization: Bearer $(cat /workspace/decrypted-data.txt)" \
+          --form "file=@\"app/scanreport.json\""
+# Substitutions for variables
+substitutions:
+  _AK_URL: "{cspm.<env-name>.accuknox.com}"
+  _TENANT_ID: "{tenant-id}"
+  _REPO_URL: "https://github.com/{user-name}/{repo-name}"  # Ensure this starts with http:// or https://
+# Optional: Specify a Cloud Storage bucket for logs
+logsBucket: "gs://{bucket-name}"

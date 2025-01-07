@@ -1,0 +1,41 @@
+pipeline {
+    agent any
+    environment {
+        TARGET_URL = '<https://ginandjuice.shop/'>
+    }
+    stages {
+        stage('OWASP ZAP Scan') {
+            steps {
+                dir('/var/lib/jenkins/workspace/DAST-AccuKnox-Demo') {
+                    script {
+                        // Run OWASP ZAP as a Docker container
+                        sh '''
+                            docker run --rm -v /var/lib/jenkins/workspace/DAST-AccuKnox-Demo/:/zap/wrk/:rw -t zaproxy/zap-stable zap-baseline.py \
+                                -t ${TARGET_URL} \
+                                -J scanreport.json \
+                                -I
+                        '''
+                    }
+                }
+            }
+        }
+        stage('Pushing DAST Results to AccuKnox') {
+            steps {
+                dir("${WORKSPACE}") {
+                    withCredentials([
+                        string(credentialsId: 'accuknox-token', variable: 'ACCUKNOX_TOKEN'),
+                        string(credentialsId: 'tenant-id', variable: 'TENANT_ID'),
+                        string(credentialsId: 'label_dast', variable: 'LABEL')
+                    ]) {
+                        sh '''
+                            curl --location --request POST "<https://cspm.demo.accuknox.com/api/v1/artifact/?tenant_id=$TENANT_ID&data_type=ZAP&label_id=$LABEL&save_to_s3=false>" \
+                                --header "Tenant-Id: $TENANT_ID" \
+                                --header "Authorization: Bearer $ACCUKNOX_TOKEN" \
+                                --form "file=@scanreport.json"
+                        '''
+                    }
+                }
+            }
+        }
+    }
+}

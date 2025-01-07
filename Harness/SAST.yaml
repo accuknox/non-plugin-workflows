@@ -1,0 +1,66 @@
+          execution:
+            steps:
+              - step:
+                  type: Run
+                  name: AccuKnox_SAST
+                  identifier: SAST_Scan
+                  spec:
+                    shell: Bash
+                    command: |-
+                      docker run --rm -e SONAR_HOST_URL="<+stage.variables.SQ_URL>" -e SONAR_SCANNER_OPTS="-Dsonar.projectKey="<+stage.variables.SQ_PROJECT>" -Dsonar.qualitygate.wait="<+stage.variables.QUALITY_GATE>"" -e SONAR_TOKEN="<+stage.variables.SQ_TOKEN>" -v "$(pwd):/usr/src" sonarsource/sonar-scanner-cli || Quality_Gate="Failed"
+                      docker run --rm -e SQ_URL="<+stage.variables.SQ_URL>" -e SQ_AUTH_TOKEN="<+stage.variables.SQ_TOKEN>" -e SQ_PROJECTS="<+stage.variables.SQ_PROJECT>" -e REPORT_PATH=/app/data -v $(pwd):/app/data accuknox/sastjob:latest
+                      for file in `ls -1 SQ-*.json`; do
+                        curl --location --request POST "<+stage.variables.ENDPOINT>/api/v1/artifact/?tenant_id=<+stage.variables.TENANT_ID>&data_type=SQ&save_to_s3=true&label_id=<+stage.variables.LABEL>" \
+                                  --header "Tenant-Id: <+stage.variables.TENANT_ID>" \
+                                  --header "Authorization: Bearer <+stage.variables.ACCUKNOX_TOKEN>" \
+                                  --form "file=@/harness/$file"
+                      done
+                      if [ "<+stage.variables.QUALITY_GATE>" -eq 1 ];then
+                        if [ "$Quality_Gate" == "Failed" ]; then
+                          echo "Quality Gate has failed, pipeline will be halted"
+                          exit 1
+                        else
+                          echo "Quality Gate passed"
+                        fi
+                      fi
+        variables:
+          - name: SQ_URL
+            type: String
+            description: "The URL to access the SonarQube deployment"
+            required: true
+            value: https://your.sonarqube.com/
+          - name: ENDPOINT
+            type: String
+            description: "The AccuKnox endpoint to forward the results"
+            required: true
+            value: https://cspm.demo.accuknox.com
+          - name: TENANT_ID
+            type: String
+            description: "The tenant ID fetched from AccuKnox platform"
+            required: true
+            value: ""
+          - name: ACCUKNOX_TOKEN
+            type: Secret
+            description: "The API Token fetched from AccuKnox platform"
+            required: true
+            value: ""
+          - name: LABEL
+            type: String
+            description: "The name of the label generated from the AccuKnox platform"
+            required: true
+            value: ""
+          - name: SQ_TOKEN
+            type: Secret
+            description: "The token generated from the SonarQube Platform"
+            required: true
+            value: ""
+          - name: SQ_PROJECT
+            type: String
+            description: "The name/key of the project created in SonarQube"
+            required: true
+            value: ""
+          - name: QUALITY_GATE
+            type: String
+            description: "Set to 'true' to fail the pipeline when Quality Gate fails. No action if set to 'false'"
+            required: true
+            value: "false"

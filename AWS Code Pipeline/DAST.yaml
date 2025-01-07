@@ -1,0 +1,46 @@
+version: 0.2
+env:
+  variables:
+    CSPM_URL: cspm.demo.accuknox.com
+    TENANT_ID: "167"
+    TARGET_URL: http://testhtml5.vulnweb.com
+    REPO_URL: https://github.com/th3-v3ng34nc3/Aditya-ak-DAST
+    LABEL: "awsdast"
+
+  secrets-manager:
+    AK_TOKEN: "AK_TOKEN:AK_TOKEN"
+
+phases:
+  pre_build:
+    commands:
+      - mkdir app
+      - echo Cloning repository...
+      - git clone --single-branch --branch main ${REPO_URL} app
+      - chmod -R 777 app
+
+  build:
+    commands:
+      # Run OWASP ZAP scan using Docker
+      - docker run --rm -v $(pwd)/app:/zap/wrk -w /zap/wrk ghcr.io/zaproxy/zaproxy:stable zap-baseline.py -t "$TARGET_URL" -r scanreport.html -x scanreport.xml -J scanreport.json -I
+
+  post_build:
+    commands:
+      - ls -al app
+      # Print out the results
+      - echo "Scan completed. Check the scanreport.json file for results."
+
+      # Post the scan report using curl
+      - |
+        curl --location --request POST "https://cspm.demo.accuknox.com/api/v1/artifact/?tenant_id=$TENANT_ID&label_id=$LABEL&data_type=ZAP&save_to_s3=true" \
+          --header "Tenant-Id: $TENANT_ID" \
+          --header "Authorization: Bearer $AK_TOKEN" \
+          --form  "file=@\"app/scanreport.json\""
+
+artifacts:
+  files:
+    - app/scanreport.json
+
+cache:
+  paths:
+    - "/root/.m2/**/*"
+    - "/root/.npm/**/*"

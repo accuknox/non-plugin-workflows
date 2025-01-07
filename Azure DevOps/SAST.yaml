@@ -1,0 +1,52 @@
+trigger:
+- main
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  - group: AccuKnox # Name of the variable group created in the Azure DevOps
+
+steps:
+- checkout: self
+  fetchDepth: 0
+
+- script: |
+    docker run --rm \
+    -e SONAR_HOST_URL=$(SQ_URL)  \
+    -e SONAR_TOKEN=$(SQ_TOKEN) \
+    -v "$(pwd):/usr/src" \
+    sonarsource/sonar-scanner-cli
+  displayName: SonarQube Scan
+
+- script: |
+    docker run --rm \
+    -e SQ_URL=$(SQ_URL) \
+    -e SQ_AUTH_TOKEN=$(SQ_TOKEN) \
+    -e SQ_PROJECTS="$(SQ_PROJECT)" \
+    -e REPORT_PATH=/app/data \
+    -v $(pwd):/app/data \
+    accuknox/sastjob:latest
+  displayName: AccuKnox SAST
+
+- script: |
+    for file in `ls -1 SQ-*.json`; do
+      curl --location --request POST "https://cspm.demo.accuknox.com/api/v1/artifact/?tenant_id=$(TENANT_ID)&data_type=SQ&save_to_s3=true&label_id=$(LABEL)" \
+        --header "Tenant-Id: $(TENANT_ID)" \
+        --header "Authorization: Bearer $(ACCUKNOX_TOKEN)" \
+        --form "file=@\"$file\""
+    done
+  displayName: Upload SAST reports to AccuKnox
+
+- script: |
+    sleep 10
+    response=$(curl -s -u "$(SQ_TOKEN):" "$(SQ_URL)/api/qualitygates/project_status?projectKey=$(SQ_PROJECT)")
+    echo "Quality Gate API Response: $response"
+    qualityGateStatus=$(echo "$response" | jq -r '.projectStatus.status')
+    if [ "$qualityGateStatus" != "OK" ]; then
+      echo "Quality Gate failed: $qualityGateStatus"
+      exit 1
+    else
+      echo "Quality Gate passed"
+    fi
+  displayName: Quality Gate Check

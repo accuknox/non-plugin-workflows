@@ -1,0 +1,81 @@
+pipeline {
+    agent any
+    environment {
+        MAVEN_HOME = '/var/lib/jenkins/workspace/SAST-AccuKnox-Demo/apache-maven-3.9.4'
+        WORKSPACE_DIR = '/var/lib/jenkins/workspace/SAST-AccuKnox-Demo'
+        PROJECT_DIR = "$WORKSPACE_DIR/addressbook/addressbook_main"
+    }
+    stages {
+        stage('CHECKOUT') {
+            steps {
+                checkout scmGit(branches: [[name: '*/main']], extensions: [], userRemoteConfigs: [[url: '<https://github.com/udit-uniyal/Devops.git']])>
+            }
+        }
+        stage('Install Maven Build Tool') {
+            steps {
+                sh 'wget <https://dlcdn.apache.org/maven/maven-3/3.9.4/binaries/apache-maven-3.9.4-bin.tar.gz'>
+                sh 'tar -xzvf $WORKSPACE_DIR/apache-maven-3.9.4-bin.tar.gz'
+            }
+        }
+        stage('Compile Application') {
+            steps {
+                dir(PROJECT_DIR) {
+                    sh '$MAVEN_HOME/bin/mvn compile'
+                }
+            }
+        }
+        stage('Test Application') {
+            steps {
+                dir(PROJECT_DIR) {
+                    sh '$MAVEN_HOME/bin/mvn test'
+                }
+            }
+        }
+        stage('SonarQube Analysis') {
+            steps {
+                dir(PROJECT_DIR) {
+                    withSonarQubeEnv(credentialsId: 'sq-auth-latest', installationName: 'sonarqube-scan') {
+                        sh "$MAVEN_HOME/bin/mvn clean verify sonar:sonar -Dsonar.projectKey=vulnerable-project"
+                    }
+                }
+            }
+        }
+        stage('Run Docker Container') {
+            steps {
+                dir(WORKSPACE_DIR) {
+                    withCredentials([string(credentialsId: 'sq-token', variable: 'SQ_AUTH_TOKEN')]) {
+                        sh '''
+                            docker run --rm \
+                            -e SQ_URL=<https://sq.accuknox.com/> \
+                            -e SQ_AUTH_TOKEN=$SQ_AUTH_TOKEN \
+                            -e REPORT_PATH=/app/data/ \
+                            -e SQ_PROJECTS="^vulnerable-project$" \
+                            -v $PWD:/app/data/ \
+                            accuknox/sastjob:latest
+                        '''
+                    }
+                }
+            }
+        }
+        stage('Pushing results to AccuKnox') {
+            steps {
+                dir(WORKSPACE_DIR) {
+                    withCredentials([
+                        string(credentialsId: 'accuknox-token', variable: 'ACCUKNOX_TOKEN'),
+                        string(credentialsId: 'tenant-id', variable: 'TENANT_ID'),
+                        string(credentialsId: 'label', variable: 'LABEL')
+                    ]) {
+                        sh '''
+                            for file in SQ-*.json; do
+                                curl --location --request POST "<https://cspm.demo.accuknox.com/api/v1/artifact/?tenant_id=$TENANT_ID&data_type=SQ&label_id=$LABEL&save_to_s3=false>" \
+                                    --header "Tenant-Id: $TENANT_ID" \
+                                    --header "Authorization: Bearer $ACCUKNOX_TOKEN" \
+                                    --form "file=@$file"
+                            done
+                        '''
+                    }
+                }
+            }
+        }
+    }
+}
