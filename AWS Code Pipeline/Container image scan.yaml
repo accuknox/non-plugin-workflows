@@ -1,0 +1,41 @@
+version: 0.2
+env:
+  variables:
+    IMAGE_NAME: "rajvanshi/aws-pipeline:v1"
+    SCAN_IMAGE_NAME: "accuknox/accuknox-container-scan:latest"
+    CSPM_URL: cspm.demo.accuknox.com
+    TENANT_ID: "167"
+  parameter-store:
+    DOCKER_LOGIN_USER: dockerLoginUser
+    DOCKER_LOGIN_PASSWORD: dockerLoginPassword
+    ACCUKNOX_API_TOKEN: accuknoxApiToken
+
+phases:
+  pre_build:
+    commands:
+      - docker login -u $DOCKER_LOGIN_USER -p $DOCKER_LOGIN_PASSWORD
+      - docker pull $SCAN_IMAGE_NAME
+
+  build:
+    commands:
+      - docker build . -t $IMAGE_NAME
+
+  post_build:
+    commands:
+      - echo Running AccuKnox Container Scanner...
+      - docker run --rm -v /var/run/docker.sock:/var/run/docker.sock $SCAN_IMAGE_NAME image $IMAGE_NAME --format json  >> /tmp/report.json
+
+      - echo Uploading report.json to CSPM endpoint...
+
+      - |
+        curl --location --request POST "https://${CSPM_URL}/api/v1/artifact/?tenant_id=${TENANT_ID}&data_type=TR&save_to_s3=false" \
+          --header "Tenant-Id: ${TENANT_ID}" \
+          --header "Authorization: Bearer $ACCUKNOX_API_TOKEN" \
+          --form "file=@/tmp/report.json"
+      - ls -l /tmp
+      - echo Checking for critical vulnerabilities using grep...
+      - |
+        if grep -q "CRITICAL" /tmp/report.json; then echo "AccuKnox Scan has halted the deployment because it detected critical vulnerabilities"; exit 1; else exit 0; fi
+
+      - echo Pushing Docker image to Docker Hub...
+      - docker push $IMAGE_NAME

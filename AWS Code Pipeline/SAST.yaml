@@ -1,0 +1,52 @@
+version: 0.2
+env:
+  variables:
+    SQ_URL: https://sq.accuknox.com
+    PROJECT_KEY: "aws-code-pipeline"
+    AccuKnox_URL: cspm.demo.accuknox.com
+    TENANT_ID: "167"
+    LABEL: "SAST"
+    GIT_DEPTH: "0"
+  secrets-manager:
+    AK_TOKEN: "AK_TOKEN:AK_TOKEN"
+    SONAR_TOKEN: "SONAR_TOKEN:SONAR_TOKEN"
+
+
+phases:
+  post_build:
+    commands:
+    - |
+      docker run --rm \
+      -e SONAR_HOST_URL=$SQ_URL  \
+      -e SONAR_TOKEN=$SONAR_TOKEN \
+      -v "$(pwd):/usr/src" \
+      sonarsource/sonar-scanner-cli
+    - |
+      docker run --rm \
+      -e SQ_URL=$SQ_URL \
+      -e SQ_AUTH_TOKEN=$SONAR_TOKEN \
+      -e REPORT_PATH=/app/data/ \
+      -e SQ_PROJECTS="$PROJECT_KEY" \
+      -v $PWD:/app/data/ \
+      accuknox/sastjob:latest
+      ls -la
+    - |
+      ls -la
+      for file in `ls -1 SQ-*.json`; do
+        curl --location --request POST "https://cspm.demo.accuknox.com/api/v1/artifact/?tenant_id=$TENANT_ID&label=$LABEL&data_type=SQ&save_to_s3=true" \
+          --header "Tenant-Id: $TENANT_ID" \
+          --header "Authorization: Bearer $AK_TOKEN" \
+          --form "file=@\"$file\""
+      done
+    - |
+      sleep 10
+      response=$(curl -s -u "$SONAR_TOKEN:" "$SQ_URL/api/qualitygates/project_status?projectKey=$PROJECT_KEY")
+      echo "Quality Gate API Response: $response"
+      qualityGateStatus=$(echo "$response" | jq -r '.projectStatus.status')
+
+      if [ "$qualityGateStatus" != "OK" ]; then
+        echo "Quality Gate failed: $qualityGateStatus"
+        exit 1
+      else
+        echo "Quality Gate passed"
+      fi

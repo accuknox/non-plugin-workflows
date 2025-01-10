@@ -1,0 +1,51 @@
+ # Step 1: Scan the container image with AccuKnox and save the report
+  - name: 'accuknox/accuknox-container-scan'
+    args: [
+      'image',
+      '--format', 'json',
+      '--output', '/workspace/accuknox-report.json',
+      '${_IMAGE_URL}:${_IMAGE_TAG}'
+    ]
+    id: 'accuknox-container-scan'
+  # Step 2: Upload the AccuKnox report to Cloud Storage
+  - name: 'gcr.io/cloud-builders/gsutil'
+    args: ['cp', '/workspace/accuknox-report.json', 'gs://BUCKET_NAME/accuknox-report.json']
+    waitFor: ['accuknox-container-scan']
+  # Step 3: Print the AccuKnox container scan results
+  - name: 'ubuntu'
+    entrypoint: 'cat'
+    args: ['/workspace/accuknox-report.json']
+    waitFor: ['accuknox-container-scan']
+  # Step 4: Access the secret using gcloud and save it to a file
+  - name: 'gcr.io/cloud-builders/gcloud'
+    entrypoint: 'bash'
+    args: [
+      '-c',
+      "gcloud secrets versions access latest --secret=accuknox_token --format='get(payload.data)' | tr '_-' '/+' | base64 -d > /workspace/decrypted-data.txt"
+    ]
+    id: 'access-secret'
+  # Step 5: Forward the logs to the SaaS platform using curl
+  - name: 'gcr.io/cloud-builders/curl'
+    entrypoint: 'bash'
+    args:
+      [
+        '-c',
+        'curl --location --request POST "https://${_CSPM_URL}/api/v1/artifact/?tenant_id=${_TENANT_ID}&data_type=TR&save_to_s3=false" --header "Tenant-Id: ${_TENANT_ID}" --header "Authorization: Bearer $(cat /workspace/decrypted-data.txt)" --form "file=@/workspace/accuknox-report.json"'
+      ]
+    waitFor: ['access-secret']
+    id: 'forward-result-to-accuknox-saas'
+  # Step 6: If there are critical vulnerabilities, stop deployment
+  - name: 'bash'
+    entrypoint: 'bash'
+    args:
+      [
+        '-c',
+        'if grep -q "CRITICAL" /workspace/accuknox-report.json; then echo "AccuKnox Scan has halted the deployment because it detected critical vulnerabilities"; exit 1; else exit 0; fi'
+      ]
+    waitFor: ['forward-result-to-accuknox-saas']
+# Define substitutions
+substitutions:
+  _IMAGE_URL: 'gcr.io/PROJECT_ID/IMAGE_NAME'
+  _IMAGE_TAG: 'latest'
+  _CSPM_URL: 'cspm.demo.accuknox.com'
+  _TENANT_ID: 'TENANT_ID'

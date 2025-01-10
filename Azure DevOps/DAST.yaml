@@ -1,0 +1,50 @@
+name: OWASP ZAP Scanning Workflow
+trigger:
+  branches:
+    include:
+      - main
+pr:
+  branches:
+    include:
+      - main
+jobs:
+  - job: zap_scan
+    displayName: 'OWASP ZAP Scan'
+    pool:
+      vmImage: 'ubuntu-latest'
+    variables:
+      - group: AccuKnoxSecrets
+    steps:
+      - checkout: self
+        displayName: 'Checkout code'
+      - script: |
+          sudo chmod -R 777 $(System.DefaultWorkingDirectory)
+        displayName: 'Set full permissions on working directory'
+      - script: |
+          sudo chmod -R 777 $(Build.SourcesDirectory)
+          echo "TARGET_URL=$(TARGET_URL)" >> $(Build.SourcesDirectory)/env.sh
+        displayName: 'Set up Docker Environment and Environment Variables'
+      - script: |
+          source $(Build.SourcesDirectory)/env.sh
+          docker run --rm -v $(Build.SourcesDirectory):/zap/wrk/:rw -t zaproxy/zap-stable zap-baseline.py \
+            -t $TARGET_URL \
+            -r scanreport.html \
+            -x scanreport.xml \
+            -J scanreport.json \
+            -I
+        displayName: 'Run OWASP ZAP Scan'
+      - script: |
+          echo "Listing generated reports..."
+          ls -l $(Build.SourcesDirectory)
+        displayName: 'List reports'
+      - task: DownloadSecureFile@1
+        name: token
+        inputs:
+          secureFile: 'TOKEN'
+        displayName: 'Download AccuKnox Token'
+      - script: |
+          curl --location --request POST "https://cspm.demo.accuknox.com/api/v1/artifact/?tenant_id=$(TENANT_ID)&data_type=ZAP&save_to_s3=false" \
+            --header "Tenant-Id: $(TENANT_ID)" \
+            --header "Authorization: Bearer $(cat $(token.secureFilePath))" \
+            --form "file=@$(Build.SourcesDirectory)/scanreport.json"
+        displayName: 'Upload ZAP Scan Report'

@@ -1,0 +1,76 @@
+steps:
+  # Step 1: Clone the GitHub repository
+  - name: 'gcr.io/cloud-builders/git'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        git clone https://github.com/{user-name}/{repo-name}.git /workspace/AccuKnox_Iac
+  # Step 2: Install Checkov and run the scan, saving the report in JSON format
+  - name: 'python:3.8'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        pip install checkov && \
+        checkov -d /workspace/AccuKnox_Iac --output json > /workspace/checkov_report.json || true
+  # Step 3: Access the secret using gcloud and save it to a file
+  - name: 'gcr.io/cloud-builders/gcloud'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        gcloud secrets versions access latest --secret=accuknox_token --format='get(payload.data)' | tr '_-' '/+' | base64 -d > /workspace/decrypted-data.txt
+  # Step 4: Install jq and manipulate JSON report
+  - name: 'ubuntu'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        apt-get update && apt-get install -y jq && \
+        if [ "." = "${directory}" ] && [ -z "${file}" ]; then \
+          jq --arg repoLink "${repository}" --arg branch "${branch}" \
+             '. += [{"details": {"repo": $repoLink, "branch": $branch}}]' \
+             /workspace/checkov_report.json > /workspace/results.json && \
+          mv /workspace/results.json /workspace/checkov_report.json; \
+        else \
+          echo '[' > /workspace/results.json && \
+          cat /workspace/checkov_report.json >> /workspace/results.json && \
+          echo ']' >> /workspace/results.json && \
+          jq --arg repoLink "${repository}" --arg branch "${branch}" \
+             '. += [{"details": {"repo": $repoLink, "branch": $branch}}]' \
+             /workspace/results.json > /workspace/tmp.json && \
+          mv /workspace/tmp.json /workspace/checkov_report.json; \
+        fi  # Removed unnecessary && here
+  # Step 6: Push report to CSPM panel
+  - name: 'gcr.io/cloud-builders/curl'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        ls -l /workspace/  # Verify file existence and permissions
+        # Check if checkov_report.json exists before attempting to upload
+        if [ -f /workspace/checkov_report.json ]; then
+          curl --location --request POST "https://${_CSPM_URL}/api/v1/artifact/?tenant_id=${_TENANT_ID}&data_type=IAC&save_to_s3=false" \
+            --header "Tenant-Id: ${_TENANT_ID}" \
+            --header "Authorization: Bearer $(cat /workspace/decrypted-data.txt)" \
+            --form "file=@/workspace/checkov_report.json"
+        else
+          echo "checkov_report.json not found in /workspace/ directory"
+          exit 1
+        fi
+# Artifacts to store the Checkov report
+artifacts:
+  objects:
+    location: 'gs://{bucket-name}/checkov-reports/'
+    paths:
+      - 'checkov_report.json'
+      - 'results.json'  # Ensure results.json is included as an artifact
+# Define substitutions
+substitutions:
+  _CSPM_URL: '{cspm.<env-name>.accuknox.com}'
+  _TENANT_ID: '{xxx}'
+  _BUCKET_NAME: 'gs://{bucket-name}'
+# Define timeout for the entire pipeline
+timeout: '1200s'  # 20 minutes
+logsBucket: 'gs://{bucket-name}'

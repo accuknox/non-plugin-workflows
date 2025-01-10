@@ -1,0 +1,34 @@
+trigger:
+- main
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  - group: AccuKnox
+  - name: IMAGE_NAME
+    value: test-image:latest
+
+steps:
+- script: docker build . -t $(IMAGE_NAME)
+  displayName: Build
+
+- script: |
+    docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+    -e "TRIVY_DB_REPOSITORY=public.ecr.aws/aquasecurity/trivy-db" \
+    -e "TRIVY_JAVA_DB_REPOSITORY=public.ecr.aws/aquasecurity/trivy-java-db" \
+    accuknox/accuknox-container-scan:latest image $(IMAGE_NAME) \
+    --format json  >> /tmp/report.json
+  displayName: AccuKnox Container Scan
+
+- script: |
+    ls -l /tmp
+    cat /tmp/report.json
+  displayName: Display Report
+
+- script: |
+    curl --location --request POST "https://cspm.demo.accuknox.com/api/v1/artifact/?tenant_id=$(TENANT_ID)&data_type=TR&save_to_s3=true&label_id=$(LABEL)" \
+    --header "Tenant-Id: $(TENANT_ID)" \
+    --header "Authorization: Bearer $(ACCUKNOX_TOKEN)" \
+    --form "file=@/tmp/report.json"
+  displayName: Upload Report to AccuKnox

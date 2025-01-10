@@ -1,0 +1,76 @@
+version: 0.2
+
+env:
+  variables:
+    shell: bash
+    CSPM_URL: cspm.demo.accuknox.com
+    TENANT_ID: "167"
+    LABEL: "AWSIAC"
+    REPOSITORY: 'https://github.com/th3-v3ng34nc3/terragoat-iac'
+    BRANCH: 'Main'
+
+  secrets-manager:
+    AK_TOKEN: "AK_TOKEN:AK_TOKEN"
+
+phases:
+  install:
+    runtime-versions:
+      python: 3.8
+    commands:
+      - echo Clonning the repo
+      - git clone https://github.com/th3-v3ng34nc3/terragoat-iac.git /tmp/AccuKnox_Iac
+
+  pre_build:
+    commands:
+      - echo Installing Checkov...
+      - pip install checkov
+      - echo Starting Checkov scan...
+
+  build:
+    commands:
+
+      - echo Running Checkov...
+      - checkov -d /tmp/AccuKnox_Iac --output json > /tmp/checkov_report.json || true
+
+  post_build:
+    commands:
+      - echo Checkov scan complete.
+      - echo Manipulating JSON report...
+      - |
+        if [ -z "${REPOSITORY}" ] || [ -z "${BRANCH}" ]; then
+          echo "Error: REPOSITORY and BRANCH environment variables must be set"
+          exit 1
+        fi
+
+        # Read the Checkov report into a JSON array if it isn't already in one
+        if jq -e . /tmp/checkov_report.json > /dev/null 2>&1; then
+          echo "File is valid JSON"
+        else
+          echo "[" > /tmp/results.json
+          cat /tmp/checkov_report.json >> /tmp/results.json
+          echo "]" >> /tmp/results.json
+          mv /tmp/results.json /tmp/checkov_report.json
+        fi
+
+        # Add repo and branch details
+        jq --arg repoLink "${REPOSITORY}" --arg branch "${BRANCH}" \
+          '. += [{"details": {"repo": $repoLink, "branch": $branch}}]' \
+          /tmp/checkov_report.json > /tmp/results.json && \
+        mv /tmp/results.json /tmp/checkov_report.json
+
+      - cat /tmp/checkov_report.json
+      - echo Uploading report.json to CSPM endpoint...
+      - |
+        curl --location --request POST "https://${CSPM_URL}/api/v1/artifact/?tenant_id=${TENANT_ID}&label_id=$LABEL&data_type=IAC&save_to_s3=true" \
+          --header "Tenant-Id: $TENANT_ID" \
+          --header "Authorization: Bearer $AK_TOKEN" \
+          --form "file=@/tmp/checkov_report.json"
+
+artifacts:
+  files:
+    - checkov_report.json
+  discard-paths: yes
+
+cache:
+  paths:
+    - /root/.cache/pip/**/*
